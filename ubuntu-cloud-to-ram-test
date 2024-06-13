@@ -1,0 +1,56 @@
+#!/bin/bash
+
+# Ensure $HOME is set
+[[ -z $HOME ]] && export HOME=/root
+
+# Make sure this script runs once only
+[[ -f /var/lib/cloud-startup.executed ]] && exit 0
+touch /var/lib/cloud-startup.executed
+
+# Ensure unattended-upgrades isn't running
+service unattended-upgrades stop
+
+# tee(1) std{out,err} to log file
+exec > >(tee -a /var/log/cloud-startup.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+apt_opts=(
+  '-o' 'Dpkg::Options::=--force-confdef'
+  '-o' 'Dpkg::Options::=--force-confold'
+  '-o' 'Dpkg::Progress-Fancy=false'
+  '-o' 'APT::Color=false'
+)
+
+# Purge unwanted packages so as to thrink the VM's root fs as much as possible
+apt-get purge $(dpkg -l |awk '{print $2}' |grep python) -y
+apt-get autoremove --purge -y
+
+# Install dependencies
+apt-get -yq ${apt_opts[@]} update
+apt-get -yq ${apt_opts[@]} install byobu curl git less make
+apt-get clean
+
+# Clone cloud-boot git repo and install to /usr/local
+git clone --depth=1 https://github.com/destinatech/cloud-to-ram /var/tmp/cloud-to-ram
+make -C /var/tmp/cloud-to-ram all install{,-systemd-service}
+rm -rf /var/tmp/cloud-to-ram
+
+# Recreate /root
+rm -rf /root && mkdir -m0700 -p /root/.ssh
+touch /root/.ssh/authorized_keys
+chmod 0600 /root/.ssh/authorized_keys
+for ssh_dir in /home/*/.ssh
+do
+  [[ -f $ssh_dir/authorized_keys ]] || continue
+  cat "$ssh_dir/authorized_keys" >> /root/.ssh/authorized_keys
+done
+git clone https://github.com/antiphysika/dotfiles-public /root/.dotfiles && make -C /root/.dotfiles
+
+# Reload systemd and start cloud-to-ram.service
+systemctl daemon-reload
+systemctl start cloud-to-ram.service
+
+exit 0
+
+#
+# vim: ts=2 sw=2 et fdm=marker :

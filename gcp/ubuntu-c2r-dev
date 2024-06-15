@@ -2,9 +2,15 @@
 
 ## {{{ ---- [ Globals ] ----------------------------------------------------------------------------
 
+# Script filename
+SCRIPT_NAME="${0##*/}"
+
 # File to log stdout/stderr to
 #
 LOG_FILE="/var/log/cloud-startup.log"
+
+# Filesystem flag; if this file exists, we will exit and do nothing
+FS_FLAG="/var/lib/cloud-startup.executed"
 
 ## {{{ PKG_PURGE[]
 #
@@ -105,6 +111,9 @@ PKG_INSTALL=(
 # Make `dpkg` work non-interactively
 export DEBIAN_FRONTEND=noninteractive
 
+# Default to `apt-get` for now
+APT=$(type -P apt-get)
+
 ## {{{ APT_OPTS[]
 #
 # Options to pass to `apt-get` so as to:
@@ -126,6 +135,28 @@ APT_OPTS=(
 
 ## {{{ ---- [ Functions ] --------------------------------------------------------------------------
 
+## {{{ info()
+function info()
+{
+  echo ">>" "$@"
+}
+## }}}
+
+## {{{ error()
+function error()
+{
+  echo >&2 "$SCRIPT_NAME: error:" "$@"
+}
+## }}}
+
+## {{{ die()
+function die()
+{
+  error "$@"
+  exit 1
+}
+## }}}
+
 ## {{{ purge_package()
 function purge_package()
 {
@@ -138,6 +169,7 @@ function purge_package()
 function purge_packages()
 {
   apt-get purge "$@" -y
+  apt-get autoremove --purge -y
 }
 ## }}}
 
@@ -156,6 +188,31 @@ function snap_remove_all()
     snap remove --purge $snap \
       || warn "$snap: snap remove --purge returned non-zero"
   done
+}
+## }}}
+
+## {{{ stop_service()
+function stop_service()
+{
+  local svc="$1"
+  systemctl stop "$svc"
+}
+## }}}
+
+## {{{ start_service()
+function start_service()
+{
+  local svc="$1"
+  systemctl start "$1"
+}
+## }}}
+
+## {{{ restart_service()
+function restart_service()
+{
+  local svc="$1"
+  stop_service "$svc"
+  start_service "$svc"
 }
 ## }}}
 
@@ -197,82 +254,110 @@ function print_running_processes()
 }
 ## }}}
 
+## {{{ install_packages()
+function install_packages()
+{
+  apt-get -yq ${APT_OPTS[@]} update
+  apt-get -yq ${APT_OPTS[@]} install "${PKG_INSTALL[@]}"
+}
+## }}}
+
 ## }}} ---- [ Functions ] --------------------------------------------------------------------------
 
-# Ensure $HOME is set
-[[ -z $HOME ]] && export HOME=/root
+## {{{ main()
+function main()
+{
+  # Make sure we found `apt-get` as expected
+  #
+  if [[ -z $APT ]]
+  then
+    error "Something has gone extraordinarily wrong..."
+    die "apt-get not found in PATH!?"
+  fi
 
-# Make sure this script runs once only
-#
-# FIXME: Disabled for the moment, re-enable once ported to modern Debian/Ubuntu
-[[ -f /var/lib/cloud-startup.executed ]] && exit 0
-touch /var/lib/cloud-startup.executed
+  # Ensure $HOME is set appropriately
+  #
+  [[ -z $HOME ]] && export HOME=/root
+
+  # Make sure this script runs once only
+  #
+  [[ -f $FS_FLAG ]] && exit 0
+  touch "$FS_FLAG"
+
+  # Before attempting to do anything apt-related, stop the `unattended-upgrades`
+  # service
+  service unattended-upgrades stop
+
+  # Remove (and purge) all snaps
+  #
+  snap_remove_all
+
+  # Uninstall (purge) unwanted packages
+  #
+  # We're trying to shrink down the root filesystem as much as possible.
+  #
+  # First, purge all packages listed in `$PKG_PURGE[]` and then purge any
+  # left-over orphaned packages with `apt-get autoremove`
+  #
+  purge_packages "${PKG_PURGE[@]}"
+  purge_orhpaned_packages
+
+  # Install dependencies.  We need to re-install `openssh-server` below because
+  # it has most definitely been removed by the exhaustive purge of everything
+  # listed in `$PKG_PURGE[]`
+  #
+  install_packages
+
+  # Remove (clean) all .deb archive files from /var/cache
+  #
+  apt-get clean
+
+  # Clone cloud-to-ram repo to /var/tmp/cloud-to-ram
+  #
+  git clone --depth=1 https://github.com/destinatech/cloud-to-ram /var/tmp/cloud-to-ram
+  make -C /var/tmp/cloud-to-ram all install{,-systemd-service}
+
+  # FIXME: Why is this here? cloud-to-ram is extramely small...
+  #
+  rm -rf /var/tmp/cloud-to-ram
+
+  # Recreate /root/.ssh and pupulate /root/.ssh/authorized_keys
+  #
+  [[ -d /root/.ssh ]] || mkdir -m0700 /root/.ssh
+  touch /root/.ssh/authorized_keys
+  chmod 0600 /root/.ssh/authorized_keys
+  for ssh_dir in /home/*
+  do
+    [[ -f $ssh_dir/.ssh/authorized_keys ]] || continue
+    cat "$ssh_dir/.ssh/authorized_keys" >> /root/.ssh/authorized_keys
+  done
+
+  # Increase `MaxAuthTries` in /etc/ssh/sshd_config
+  sed -i -e 's/^#MaxAuthTries.*/MaxAuthTries 50/' /etc/ssh/sshd_config
+  service ssh restart
+
+  # Reload systemd
+  systemctl daemon-reload
+
+  # Print updated list of running services post-purge to stdout
+  print_running_services
+
+  # Print list of running processes
+  print_running_processes
+
+  # Finally, start cloud-to-ram.service
+  systemctl start cloud-to-ram.service
+
+  return 0
+}
+## }}}
 
 # Rediect stdout/stderr to `$LOG_FILE`
+#
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-# Print updated list of running services pre-purge to stdout
-print_running_services
-
-# Before attempting to do anything apt-related, stop the `unattended-upgrades`
-# service
-service unattended-upgrades stop
-
-# Remove (and purge) all snaps
-snap_remove_all
-
-# Purge unwanted packages so as to thrink the VM's root fs as much as possible
-purge_packages "${PKG_PURGE[@]}"
-
-# Purge all Python-related packages
-#apt-get purge $(dpkg -l |awk '{print $2}' |grep python) -y
-
-# Auto-remove packages that are no longer needed (i.e., orphanned)
-apt-get autoremove --purge -y
-
-# Install dependencies.  We need to re-install `openssh-server` below because
-# it has most definitely been removed by the exhaustive purge of everything
-# listed in `$PKG_PURGE`
-apt-get -yq ${APT_OPTS[@]} update
-apt-get -yq ${APT_OPTS[@]} install "${PKG_INSTALL[@]}"
-
-# Remove .deb archives from /car/cache
-apt-get clean
-
-# Clone cloud-boot git repo and install to /usr/local
-git clone --depth=1 https://github.com/destinatech/cloud-to-ram /var/tmp/cloud-to-ram
-make -C /var/tmp/cloud-to-ram all install{,-systemd-service}
-rm -rf /var/tmp/cloud-to-ram
-
-# Recreate /root/.ssh and pupulate /root/.ssh/authorized_keys
-[[ -d /root/.ssh ]] || mkdir -m0700 /root/.ssh
-touch /root/.ssh/authorized_keys
-chmod 0600 /root/.ssh/authorized_keys
-for ssh_dir in /home/*
-do
-  [[ -f $ssh_dir/.ssh/authorized_keys ]] || continue
-  cat "$ssh_dir/.ssh/authorized_keys" >> /root/.ssh/authorized_keys
-done
-
-# Loosen `MaxAuthTries` in /etc/ssh/sshd_config
-sed -i -e 's/^#MaxAuthTries.*/MaxAuthTries 50/' /etc/ssh/sshd_config
-service ssh restart
-
-# Reload systemd
-systemctl daemon-reload
-
-
-
-# Print updated list of running services post-purge to stdout
-print_running_services
-
-# Print list of running processes
-print_running_processes
-
-# Finally, start cloud-to-ram.service
-systemctl start cloud-to-ram.service
-
-exit 0
+main "$@"
+exit $?
 
 #
 # vim: ts=2 sw=2 et fdm=marker :

@@ -361,6 +361,14 @@ function main()
   # Finally, start cloud-to-ram.service
   systemctl start cloud-to-ram.service
 
+  echo "Migration complete"
+  echo
+  echo "Don't forget to umount /oldroot before attempting to install"
+  echo "a new distribution.  Killing of left-over, non-root processes"
+  echo "that are still running like these:"
+  echo
+  fuser -vm /oldroot
+
   return 0
 }
 ## }}}

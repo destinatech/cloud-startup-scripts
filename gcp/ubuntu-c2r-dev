@@ -1,5 +1,7 @@
 #!/bin/bash
 
+## {{{ ---- [ Globals ] ----------------------------------------------------------------------------
+
 ## {{{ PKG_PURGE[]
 #
 # *Complete* list of packages to purge
@@ -96,12 +98,15 @@ PKG_INSTALL=(
 #
 # END of PKG_INSTALL[] }}}
 
+## }}} ---- [ Globals ] ----------------------------------------------------------------------------
+
+## {{{ ---- [ Functions ] --------------------------------------------------------------------------
+
 ## {{{ purge_package()
 function purge_package()
 {
   local pkg="$1"
   apt-get purge "$pkg" -y
-  apt-get autoremove --purge -y
 }
 ## }}}
 
@@ -109,6 +114,12 @@ function purge_package()
 function purge_packages()
 {
   apt-get purge "$@" -y
+}
+## }}}
+
+## {{{ purge_orhpaned_packages()
+function purge_orhpaned_packages()
+{
   apt-get autoremove --purge -y
 }
 ## }}}
@@ -167,6 +178,8 @@ function print_running_processes()
   echo -e "END running processes list\n"
 }
 ## }}}
+
+## }}} ---- [ Functions ] --------------------------------------------------------------------------
 
 # Ensure $HOME is set
 [[ -z $HOME ]] && export HOME=/root

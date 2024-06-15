@@ -295,6 +295,12 @@ function main()
   # service
   service unattended-upgrades stop
 
+  # Create a tarball of the entire `/etc/` tree and stash it under `/root/`.
+  # e should do this as early as possible in case any files we may want toxi
+  # reference later get deleted by the following steps.
+  #
+  (cd /; tar Jcvpf root/etc.tar.xz etc)
+
   # Remove (and purge) all snaps
   #
   snap_remove_all

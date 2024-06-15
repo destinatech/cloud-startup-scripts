@@ -2,6 +2,10 @@
 
 ## {{{ ---- [ Globals ] ----------------------------------------------------------------------------
 
+# File to log stdout/stderr to
+#
+LOG_FILE="/var/log/cloud-startup.log"
+
 ## {{{ PKG_PURGE[]
 #
 # *Complete* list of packages to purge
@@ -98,6 +102,26 @@ PKG_INSTALL=(
 #
 # END of PKG_INSTALL[] }}}
 
+# Make `dpkg` work non-interactively
+export DEBIAN_FRONTEND=noninteractive
+
+## {{{ APT_OPTS[]
+#
+# Options to pass to `apt-get` so as to:
+#
+#   - Disable colours
+#   - Disable fancy progress bars
+#   - Try and make apt-get/dpkg as non-interactive as possible
+#
+APT_OPTS=(
+  '-o' 'Dpkg::Options::=--force-confdef'
+  '-o' 'Dpkg::Options::=--force-confold'
+  '-o' 'Dpkg::Progress-Fancy=false'
+  '-o' 'APT::Color=false'
+)
+#
+## END of APT_OPTS[] }}}
+
 ## }}} ---- [ Globals ] ----------------------------------------------------------------------------
 
 ## {{{ ---- [ Functions ] --------------------------------------------------------------------------
@@ -121,6 +145,17 @@ function purge_packages()
 function purge_orhpaned_packages()
 {
   apt-get autoremove --purge -y
+}
+## }}}
+
+## {{{ snap_remove_all()
+function snap_remove_all()
+{
+  snap list |grep -v ^Name |awk '{print $1}' |while read snap
+  do
+    snap remove --purge $snap \
+      || warn "$snap: snap remove --purge returned non-zero"
+  done
 }
 ## }}}
 
@@ -153,27 +188,10 @@ function print_running_processes()
 {
   echo -e "BEGIN running processes list\n"
 
-  if false
-  then
-    echo  "LOGIN(UID) PID EXE"
-    for name in /proc/*
-    do
-      pid="${name##*/}"
-      [[ $pid =~ ^([0-9]+)$ ]] || continue;
-      [[ $pid -eq 1 ]] && continue
-      readlink "/proc/$pid/exe" >/dev/null 2>&1 || continue
-      local uid="$(< /proc/$pid/loginuid)"
-
-      # Kernel threads (and PID-1 [read: /systemd]) get `loginuid == 4294967295`
-      [[ $uid == 4294967295 ]] && uid=0
-
-      local login="$(id -un $uid)"
-      echo "$login($uid) $pid $(readlink /proc/$pid/exe)"
-    done
-  else
-    # Skip over processes whose names are of the form `[STRING]` (kernel threads)
-    ps -ax -o uid -o pid -o cmd |awk '$NF!~/^\[.+\]$/'
-  fi
+  # Print process list with ps(1), skipping over processes whose names are of
+  # the form `[STRING]` (i.e., kernel threads)
+  #
+  ps -ax -o uid -o pid -o cmd |awk '$NF!~/^\[.+\]$/'
 
   echo -e "END running processes list\n"
 }
@@ -190,8 +208,8 @@ function print_running_processes()
 [[ -f /var/lib/cloud-startup.executed ]] && exit 0
 touch /var/lib/cloud-startup.executed
 
-# tee(1) std{out,err} to log file
-exec > >(tee -a /var/log/cloud-startup.log) 2>&1
+# Rediect stdout/stderr to `$LOG_FILE`
+exec > >(tee -a "$LOG_FILE") 2>&1
 
 # Print updated list of running services pre-purge to stdout
 print_running_services
@@ -200,17 +218,8 @@ print_running_services
 # service
 service unattended-upgrades stop
 
-# Configure apt-get for no colours and dpkg to be non-interactive
-export DEBIAN_FRONTEND=noninteractive
-apt_opts=(
-  '-o' 'Dpkg::Options::=--force-confdef'
-  '-o' 'Dpkg::Options::=--force-confold'
-  '-o' 'Dpkg::Progress-Fancy=false'
-  '-o' 'APT::Color=false'
-)
-
-# Purge `lxd` snap
-snap remove --purge lxd
+# Remove (and purge) all snaps
+snap_remove_all
 
 # Purge unwanted packages so as to thrink the VM's root fs as much as possible
 purge_packages "${PKG_PURGE[@]}"
@@ -224,8 +233,8 @@ apt-get autoremove --purge -y
 # Install dependencies.  We need to re-install `openssh-server` below because
 # it has most definitely been removed by the exhaustive purge of everything
 # listed in `$PKG_PURGE`
-apt-get -yq ${apt_opts[@]} update
-apt-get -yq ${apt_opts[@]} install "${PKG_INSTALL[@]}"
+apt-get -yq ${APT_OPTS[@]} update
+apt-get -yq ${APT_OPTS[@]} install "${PKG_INSTALL[@]}"
 
 # Remove .deb archives from /car/cache
 apt-get clean

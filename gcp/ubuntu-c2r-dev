@@ -142,10 +142,17 @@ function info()
 }
 ## }}}
 
+## {{{ warn()
+function warn()
+{
+  echo >&2 "$SCRIPT_NAME: Warning:" "$@"
+}
+## }}}
+
 ## {{{ error()
 function error()
 {
-  echo >&2 "$SCRIPT_NAME: error:" "$@"
+  echo >&2 "$SCRIPT_NAME: Error:" "$@"
 }
 ## }}}
 

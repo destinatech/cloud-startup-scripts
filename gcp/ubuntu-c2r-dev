@@ -187,11 +187,8 @@ function print_running_processes()
 # Make sure this script runs once only
 #
 # FIXME: Disabled for the moment, re-enable once ported to modern Debian/Ubuntu
-if false
-then
-  [[ -f /var/lib/cloud-startup.executed ]] && exit 0
-  touch /var/lib/cloud-startup.executed
-fi
+[[ -f /var/lib/cloud-startup.executed ]] && exit 0
+touch /var/lib/cloud-startup.executed
 
 # tee(1) std{out,err} to log file
 exec > >(tee -a /var/log/cloud-startup.log) 2>&1
